@@ -1,0 +1,39 @@
+{
+  "name": "nearbytes-chat",
+  "version": "0.1.0",
+  "description": "Nearbytes hub-scoped chat protocol on top of the event log",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./browser": {
+      "import": "./dist/browser.js",
+      "types": "./dist/browser.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "type-check": "tsc --noEmit",
+    "prepack": "tsc",
+    "update": "node scripts/update.mjs"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "nearbytes-crypto": "github:nearbytes/nearbytes-crypto#6859719510764702844882b8488b35ab31f20145",
+    "nearbytes-log": "github:nearbytes/nearbytes-log#0dc0519007bc1f8a9bfc3c52922387cc45fb7162"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.2"
+  },
+  "packageManager": "yarn@4.15.0"
+}
