@@ -22,6 +22,7 @@
     "build": "tsc",
     "type-check": "tsc --noEmit",
     "prepack": "tsc",
+    "refresh": "node scripts/refresh.mjs",
     "update": "node scripts/update.mjs"
   },
   "license": "MIT",
@@ -29,8 +30,8 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "nearbytes-crypto": "github:nearbytes/nearbytes-crypto#6859719510764702844882b8488b35ab31f20145",
-    "nearbytes-log": "github:nearbytes/nearbytes-log#0dc0519007bc1f8a9bfc3c52922387cc45fb7162"
+    "nearbytes-crypto": "github:nearbytes/nearbytes-crypto",
+    "nearbytes-log": "github:nearbytes/nearbytes-log"
   },
   "devDependencies": {
     "typescript": "^5.3.2"
