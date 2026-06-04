@@ -3,15 +3,10 @@
  * reloads. One projection per hub channel, persisted via a MaterializedStore, fed
  * incrementally by the log router. `nearbytes-engine` wires this; shells consume it.
  */
-import type { CryptoOperations, Hash, Secret } from 'nearbytes-crypto';
+import type { CryptoOperations } from 'nearbytes-crypto';
 import { createSecret, bytesToHex } from 'nearbytes-crypto';
 import type { EventLogEntry, Log, MaterializedStore, Projection } from 'nearbytes-log';
-import {
-  createProjection,
-  eventEnvelopePublicKeyMatches,
-  hydrateSignedEvent,
-  openChannel,
-} from 'nearbytes-log';
+import { createProjection, openChannel } from 'nearbytes-log';
 import { publishChatMessage } from './index.js';
 import type { ChatTimelineItem, PublishedChatMessage } from './index.js';
 import { createChatProjector, CHAT_PROJECTOR_ID, type ChatTimelineState } from './chatProjector.js';
@@ -39,79 +34,14 @@ export interface ChatService {
   stop(): void;
 }
 
-const HYDRATE_CONCURRENCY = 128;
-
-/** Map with bounded concurrency, preserving input order in the result. */
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const out = new Array<R>(items.length);
-  let next = 0;
-  const worker = async (): Promise<void> => {
-    for (;;) {
-      const index = next++;
-      if (index >= items.length) return;
-      out[index] = await fn(items[index]!);
-    }
-  };
-  const workers = Array.from({ length: Math.min(limit, items.length) }, () => worker());
-  await Promise.all(workers);
-  return out;
-}
-
 export function createChatService(deps: ChatServiceDependencies): ChatService {
   const projections = new Map<string, Promise<Projection<ChatTimelineState>>>();
   const projector = createChatProjector();
 
   const norm = (secret: string): string => createSecret(secret) as unknown as string;
 
-  const hydrateOne = async (
-    secret: Secret,
-    eventHash: string,
-  ): Promise<EventLogEntry | undefined> => {
-    const keyPair = await deps.crypto.deriveKeys(secret);
-    try {
-      const signed = await deps.log.events.retrieveEvent(keyPair.publicKey, eventHash as Hash);
-      if (!eventEnvelopePublicKeyMatches(signed, keyPair.publicKey)) return undefined;
-      return {
-        eventHash: eventHash as Hash,
-        signedEvent: await hydrateSignedEvent(deps.crypto, keyPair.privateKey, signed),
-      };
-    } catch {
-      return undefined;
-    }
-  };
-
-  const catchUp = async (projection: Projection<ChatTimelineState>, secret: string): Promise<void> => {
-    // Derive the channel keypair ONCE (PBKDF2 is ~20ms); never per event.
-    const keyPair = await deps.crypto.deriveKeys(createSecret(secret));
-    const listed = await deps.log.events.listEvents(keyPair.publicKey);
-    const unknown = listed.filter((hash) => !projection.has(hash));
-    if (unknown.length === 0) return;
-    // Hydrate (retrieve + verify + decrypt) with bounded concurrency so cold
-    // builds of large channels saturate I/O without exhausting file handles.
-    const hydrated = await mapWithConcurrency(unknown, HYDRATE_CONCURRENCY, async (hash) => {
-      try {
-        // Trusted replay: events in the local log were signature-verified at
-        // reception/emit; the content-address hash is still checked on read.
-        const signed = await deps.log.events.retrieveEvent(keyPair.publicKey, hash as Hash, {
-          verifySignature: false,
-        });
-        if (!eventEnvelopePublicKeyMatches(signed, keyPair.publicKey)) return undefined;
-        return {
-          eventHash: hash as Hash,
-          signedEvent: await hydrateSignedEvent(deps.crypto, keyPair.privateKey, signed),
-        } satisfies EventLogEntry;
-      } catch {
-        return undefined;
-      }
-    });
-    const entries = hydrated.filter((entry): entry is EventLogEntry => entry !== undefined);
-    if (entries.length > 0) await projection.ingest(entries);
-  };
-
+  // Catch-up (list + trusted, bounded-parallel hydrate + ingest) is shared in the
+  // projection engine; the service never reimplements it.
   const ensure = (secret: string): Promise<Projection<ChatTimelineState>> => {
     const key = norm(secret);
     let pending = projections.get(key);
@@ -119,7 +49,7 @@ export function createChatService(deps: ChatServiceDependencies): ChatService {
       pending = (async () => {
         const channel = await openChannel(createSecret(secret), deps.crypto);
         const projection = await createProjection(deps.log, channel, deps.crypto, projector, deps.store);
-        await catchUp(projection, secret);
+        await projection.catchUp();
         return projection;
       })();
       projections.set(key, pending);
@@ -135,7 +65,7 @@ export function createChatService(deps: ChatServiceDependencies): ChatService {
   return {
     async timeline(secret) {
       const projection = await ensure(secret);
-      await catchUp(projection, secret);
+      await projection.catchUp();
       return [...projection.state().items];
     },
     async publish(secret, body, timestamp) {
@@ -145,9 +75,9 @@ export function createChatService(deps: ChatServiceDependencies): ChatService {
         body,
         timestamp,
       );
-      const projection = await ensure(secret);
-      const entry = await hydrateOne(createSecret(secret), published.eventHash);
-      if (entry !== undefined) await projection.ingest([entry]);
+      // Pick up the just-stored event (catchUp lists once, hydrates only the new
+      // hash); dedupes with the router's live push.
+      await (await ensure(secret)).catchUp();
       return published;
     },
     async ingest(secret, entries) {
