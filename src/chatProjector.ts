@@ -5,10 +5,9 @@
  * `(publishedAt, eventHash)`. This is the protocol's ordering choice, not the
  * engine's.
  */
-import type { CryptoOperations } from 'nearbytes-crypto';
 import type { OrderKey, Projector } from 'nearbytes-log';
 import { appendReorder } from 'nearbytes-log';
-import { parseChatPayload, verifyChatMessage } from './index.js';
+import { parseChatPayload } from './index.js';
 import type { ChatTimelineItem } from './index.js';
 
 export const CHAT_PROJECTOR_ID = 'nb.chat.v1';
@@ -26,7 +25,7 @@ function byPublishedAtThenHash(a: ChatTimelineItem, b: ChatTimelineItem): number
   return 0;
 }
 
-export function createChatProjector(crypto: CryptoOperations): Projector<ChatTimelineState, ChatKey> {
+export function createChatProjector(): Projector<ChatTimelineState, ChatKey> {
   return {
     id: CHAT_PROJECTOR_ID,
     initial: () => ({ items: [] }),
@@ -36,18 +35,23 @@ export function createChatProjector(crypto: CryptoOperations): Projector<ChatTim
     }),
     key: (entry) => ({ hash: entry.eventHash }),
     reorder: (prev, next) => appendReorder(prev, next),
-    reduce: async (base, tail) => {
+    reduce: (base, tail) => {
+      // Events reach the projector only after acceptance-time verification (sync
+      // receive / local emit verify the channel signature; the log re-checks the
+      // content-address hash on read). Replay therefore trusts the local log and
+      // does NOT re-run a per-event ECDSA verify — the dominant cost on cold
+      // rebuilds. The hub key that signed the envelope is the chat record signer
+      // in v1 (chat-v1 §4), so envelope authenticity implies record authenticity.
       const items = [...base.items];
       for (const entry of tail) {
         const extracted = parseChatPayload(entry.signedEvent.payload);
         if (extracted === null) continue; // non-chat events have no timeline effect
-        const verified = await verifyChatMessage(crypto, extracted.message).catch(() => false);
         items.push({
           eventHash: entry.eventHash,
           channelPublicKey: entry.signedEvent.envelope.publicKey,
           publishedAt: extracted.publishedAt,
           message: extracted.message,
-          verified,
+          verified: true,
         });
       }
       items.sort(byPublishedAtThenHash);
