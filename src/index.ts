@@ -575,3 +575,9 @@ function sortJsonValue(value: JsonValue): JsonValue {
   }
   return sorted;
 }
+
+// Projection-engine integration (storage/projection-engine-v1.md, chat-v1 §5).
+export { createChatProjector, CHAT_PROJECTOR_ID } from './chatProjector.js';
+export type { ChatKey, ChatTimelineState } from './chatProjector.js';
+export { createChatService } from './chatService.js';
+export type { ChatService, ChatServiceDependencies } from './chatService.js';
