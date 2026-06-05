@@ -26,7 +26,7 @@ __metadata:
   resolution: "nearbytes-chat@workspace:."
   dependencies:
     nearbytes-crypto: "github:nearbytes/nearbytes-crypto"
-    nearbytes-log: "portal:../nearbytes-log"
+    nearbytes-log: "github:nearbytes/nearbytes-log"
     typescript: "npm:^5.3.2"
   languageName: unknown
   linkType: soft
@@ -40,13 +40,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"nearbytes-log@portal:../nearbytes-log::locator=nearbytes-chat%40workspace%3A.":
-  version: 0.0.0-use.local
-  resolution: "nearbytes-log@portal:../nearbytes-log::locator=nearbytes-chat%40workspace%3A."
+"nearbytes-log@github:nearbytes/nearbytes-log":
+  version: 0.1.0
+  resolution: "nearbytes-log@https://github.com/nearbytes/nearbytes-log.git#commit=f1215ba71c102e8c380fd2a729dc7cc81bc7ebc9"
   dependencies:
     nearbytes-crypto: "github:nearbytes/nearbytes-crypto"
+  checksum: 10c0/fa81d5e7b8d01ca0d4642718367dec3486b427b51d69d5c16c0602e3211f811ff997da96ea68d877b2380eb7426cc35cf08c7a8825820fe86688168c15775447
   languageName: node
-  linkType: soft
+  linkType: hard
 
 "typescript@npm:^5.3.2":
   version: 5.9.3

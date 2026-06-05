@@ -31,14 +31,10 @@
   },
   "dependencies": {
     "nearbytes-crypto": "github:nearbytes/nearbytes-crypto",
-    "nearbytes-log": "portal:../nearbytes-log"
+    "nearbytes-log": "github:nearbytes/nearbytes-log"
   },
   "devDependencies": {
     "typescript": "^5.3.2"
   },
-  "packageManager": "yarn@4.15.0",
-  "resolutions": {
-    "nearbytes-crypto": "portal:../nearbytes-crypto",
-    "nearbytes-log": "portal:../nearbytes-log"
-  }
+  "packageManager": "yarn@4.15.0"
 }
