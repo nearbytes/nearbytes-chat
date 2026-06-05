@@ -12,6 +12,9 @@ import type { ChatTimelineItem } from './index.js';
 
 export const CHAT_PROJECTOR_ID = 'nb.chat.v1';
 
+/** Above this tail size, a single sort beats per-item binary insertion. */
+const BULK_TAIL = 16;
+
 export type ChatKey = OrderKey;
 
 export interface ChatTimelineState {
@@ -42,11 +45,11 @@ export function createChatProjector(): Projector<ChatTimelineState, ChatKey> {
       // does NOT re-run a per-event ECDSA verify — the dominant cost on cold
       // rebuilds. The hub key that signed the envelope is the chat record signer
       // in v1 (chat-v1 §4), so envelope authenticity implies record authenticity.
-      const items = [...base.items];
+      const incoming: ChatTimelineItem[] = [];
       for (const entry of tail) {
         const extracted = parseChatPayload(entry.signedEvent.payload);
         if (extracted === null) continue; // non-chat events have no timeline effect
-        items.push({
+        incoming.push({
           eventHash: entry.eventHash,
           channelPublicKey: entry.signedEvent.envelope.publicKey,
           publishedAt: extracted.publishedAt,
@@ -54,7 +57,26 @@ export function createChatProjector(): Projector<ChatTimelineState, ChatKey> {
           verified: true,
         });
       }
-      items.sort(byPublishedAtThenHash);
+      if (incoming.length === 0) return base;
+      const items = base.items.slice();
+      if (incoming.length > BULK_TAIL) {
+        // Cold rebuild: one O(n log n) sort beats n insertions.
+        for (const item of incoming) items.push(item);
+        items.sort(byPublishedAtThenHash);
+      } else {
+        // Live arrival (usually one, in publishedAt order): binary-insert keeps a
+        // single-event ingest O(log n) + a tail-push, not an O(n log n) re-sort.
+        for (const item of incoming) {
+          let lo = 0;
+          let hi = items.length;
+          while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (byPublishedAtThenHash(items[mid]!, item) <= 0) lo = mid + 1;
+            else hi = mid;
+          }
+          items.splice(lo, 0, item);
+        }
+      }
       return { items };
     },
   };

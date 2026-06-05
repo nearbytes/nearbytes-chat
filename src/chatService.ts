@@ -69,16 +69,11 @@ export function createChatService(deps: ChatServiceDependencies): ChatService {
       return [...projection.state().items];
     },
     async publish(secret, body, timestamp) {
-      const published = await publishChatMessage(
-        { log: deps.log, crypto: deps.crypto },
-        secret,
-        body,
-        timestamp,
-      );
-      // Pick up the just-stored event (catchUp lists once, hydrates only the new
-      // hash); dedupes with the router's live push.
-      await (await ensure(secret)).catchUp();
-      return published;
+      // Ensure the projection (and its live router subscription) exists first, so
+      // the stored event is ingested via the router with no full-channel rescan.
+      // publish is then O(1): no per-publish listEvents/catchUp.
+      await ensure(secret);
+      return publishChatMessage({ log: deps.log, crypto: deps.crypto }, secret, body, timestamp);
     },
     async ingest(secret, entries) {
       const projection = await ensure(secret);
