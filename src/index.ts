@@ -264,6 +264,202 @@ export async function projectChatTimeline(
   return out;
 }
 
+export interface PublishedIdentitySnapshot {
+  readonly channelPublicKey: string;
+  readonly eventHash: Hash;
+  readonly snapshot: IdentitySnapshot;
+  readonly payload: AppRecordPayload;
+}
+
+/**
+ * Publishes a profile's identity record into a hub channel as an
+ * `nb.identity.snapshot.v1` app record, so members of that hub can resolve
+ * the profile's display name. The canonical record still lives in the
+ * profile's own channel; the snapshot carries a `ref` back to it.
+ *
+ * Two keys are involved and they are NOT interchangeable:
+ *
+ * - `profileKeyPair` signs the snapshot (and the record inside it). This is
+ *   the only thing that authenticates "this display name belongs to this
+ *   profile".
+ * - the hub secret derives the channel keypair that signs and encrypts the
+ *   *envelope*. This only scopes readability to hub members.
+ *
+ * Every hub member holds the hub secret, so the envelope proves nothing
+ * about authorship — any member could write an event claiming any
+ * `authorPublicKey`. Readers MUST therefore call `verifyIdentitySnapshot`
+ * (or use {@link projectIdentityDirectory}) before trusting a name.
+ */
+export async function publishIdentitySnapshot(
+  deps: {
+    readonly log: Log;
+    readonly crypto: CryptoOperations;
+  },
+  hubSecret: Secret | string,
+  profileKeyPair: KeyPair,
+  record: IdentityRecord,
+  canonicalEventHash: string,
+  timestamp: number = Date.now(),
+): Promise<PublishedIdentitySnapshot> {
+  const secret = normalizeSecret(hubSecret);
+  const channel = await openChannel(secret, deps.crypto);
+  const hubKeyPair = await deps.crypto.deriveKeys(channel.secret);
+  const profilePublicKey = bytesToHex(profileKeyPair.publicKey);
+  if (record.k !== profilePublicKey) {
+    throw new Error('Identity snapshot must be signed by the profile that owns the record');
+  }
+  const snapshot = await createIdentitySnapshot(deps.crypto, profileKeyPair, {
+    record,
+    // SNAPSHOT ref points at the canonical event in the profile's OWN
+    // channel; `parseIdentitySnapshot` enforces ref.channel === record.k.
+    ref: { channel: profilePublicKey, eventHash: canonicalEventHash },
+    timestamp,
+  });
+  const payload: AppRecordPayload = {
+    type: EventType.APP_RECORD,
+    protocol: IDENTITY_SNAPSHOT_PROTOCOL,
+    authorPublicKey: profilePublicKey,
+    record: serializeIdentitySnapshot(snapshot),
+    publishedAt: timestamp,
+  };
+  const signedEvent = await createSignedEvent(deps.crypto, hubKeyPair, payload, []);
+  const eventHash = await deps.log.events.storeEvent(hubKeyPair.publicKey, signedEvent);
+  return {
+    channelPublicKey: bytesToHex(hubKeyPair.publicKey),
+    eventHash,
+    snapshot,
+    payload,
+  };
+}
+
+export interface IdentityDirectoryEntry {
+  readonly profilePublicKey: string;
+  readonly displayName: string;
+  readonly bio?: string;
+  readonly publishedAt: number;
+  /** `record` = canonical, in the profile's own channel; `snapshot` = carried into this channel. */
+  readonly source: 'record' | 'snapshot';
+}
+
+/**
+ * Projects a channel's events into a profile-public-key → display-name
+ * directory, keyed by the profile key that actually *signed* the identity
+ * record.
+ *
+ * Signature verification is mandatory here, not decorative: within a hub
+ * every member holds the channel secret, so an unverified `authorPublicKey`
+ * is an unauthenticated claim and any member could otherwise publish a name
+ * under someone else's profile key. Records that fail verification are
+ * dropped rather than surfaced.
+ *
+ * Last writer wins per profile, ordered by the record's own `ts`.
+ */
+export async function projectIdentityDirectory(
+  entries: readonly EventLogEntry[],
+  crypto: CryptoOperations,
+): Promise<Map<string, IdentityDirectoryEntry>> {
+  const out = new Map<string, IdentityDirectoryEntry>();
+  for (const entry of entries) {
+    const payload = entry.signedEvent.payload;
+    if (payload.type !== EventType.APP_RECORD || typeof payload.record !== 'string') {
+      continue;
+    }
+    let record: IdentityRecord | null = null;
+    let source: IdentityDirectoryEntry['source'] | null = null;
+    try {
+      if (payload.protocol === IDENTITY_RECORD_PROTOCOL) {
+        const parsed = parseIdentityRecordJson(payload.record);
+        if (parsed !== null && (await verifyIdentityRecord(crypto, parsed))) {
+          record = parsed;
+          source = 'record';
+        }
+      } else if (payload.protocol === IDENTITY_SNAPSHOT_PROTOCOL) {
+        const parsed = parseIdentitySnapshotJson(payload.record);
+        // verifyIdentitySnapshot checks the inner record too.
+        if (parsed !== null && (await verifyIdentitySnapshot(crypto, parsed))) {
+          record = parsed.record;
+          source = 'snapshot';
+        }
+      }
+    } catch {
+      // Malformed or unverifiable identity payloads are skipped so one bad
+      // record cannot break the directory for the whole channel.
+      continue;
+    }
+    if (record === null || source === null) {
+      continue;
+    }
+    const existing = out.get(record.k);
+    if (existing !== undefined && existing.publishedAt >= record.ts) {
+      continue;
+    }
+    const bio = record.profile.bio;
+    out.set(record.k, {
+      profilePublicKey: record.k,
+      displayName: record.profile.displayName,
+      ...(bio !== undefined ? { bio } : {}),
+      publishedAt: record.ts,
+      source,
+    });
+  }
+  return out;
+}
+
+/**
+ * Latest verified identity record a channel holds for its *own* key, together
+ * with the event hash that carries it.
+ *
+ * This is what a profile needs in order to re-broadcast itself: the canonical
+ * record lives in the profile's own channel, and {@link publishIdentitySnapshot}
+ * needs both the record and its canonical `eventHash` to build the snapshot
+ * `ref`. Returns `null` when the profile has never published an identity.
+ */
+export async function readOwnIdentityRecord(
+  deps: {
+    readonly log: Log;
+    readonly crypto: CryptoOperations;
+  },
+  profileSecret: Secret | string,
+): Promise<{ readonly record: IdentityRecord; readonly eventHash: Hash } | null> {
+  const secret = normalizeSecret(profileSecret);
+  const channel = await openChannel(secret, deps.crypto);
+  const keyPair = await deps.crypto.deriveKeys(channel.secret);
+  const own = bytesToHex(keyPair.publicKey);
+  const entries = await loadEventLog(channel, deps.log, deps.crypto);
+  let best: { record: IdentityRecord; eventHash: Hash } | null = null;
+  for (const entry of entries) {
+    const payload = entry.signedEvent.payload;
+    if (payload.type !== EventType.APP_RECORD || typeof payload.record !== 'string') continue;
+    if (payload.protocol !== IDENTITY_RECORD_PROTOCOL) continue;
+    try {
+      const record = parseIdentityRecordJson(payload.record);
+      // Only our own key, and only if it actually verifies.
+      if (record === null || record.k !== own) continue;
+      if (!(await verifyIdentityRecord(deps.crypto, record))) continue;
+      if (best === null || record.ts > best.record.ts) {
+        best = { record, eventHash: entry.eventHash };
+      }
+    } catch {
+      continue;
+    }
+  }
+  return best;
+}
+
+/** Reads a hub channel and projects its verified identity directory. */
+export async function readIdentityDirectory(
+  deps: {
+    readonly log: Log;
+    readonly crypto: CryptoOperations;
+  },
+  hubSecret: Secret | string,
+): Promise<Map<string, IdentityDirectoryEntry>> {
+  const secret = normalizeSecret(hubSecret);
+  const channel = await openChannel(secret, deps.crypto);
+  const entries = await loadEventLog(channel, deps.log, deps.crypto);
+  return projectIdentityDirectory(entries, deps.crypto);
+}
+
 export function parseChatPayload(
   payload: EventPayload,
 ): { readonly message: ChatMessage; readonly publishedAt: number } | null {

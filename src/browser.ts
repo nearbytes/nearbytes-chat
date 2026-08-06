@@ -15,9 +15,13 @@ export {
   parseIdentitySnapshot,
   parseIdentitySnapshotJson,
   projectChatTimeline,
+  projectIdentityDirectory,
   publicKeyFromHex,
   publishChatMessage,
+  publishIdentitySnapshot,
   readChatTimeline,
+  readIdentityDirectory,
+  readOwnIdentityRecord,
   serializeChatMessage,
   serializeIdentityRecord,
   serializeIdentitySnapshot,
@@ -29,10 +33,12 @@ export {
 export type {
   ChatMessage,
   ChatTimelineItem,
+  IdentityDirectoryEntry,
   IdentityProfile,
   IdentityRecord,
   IdentitySnapshot,
   PublishedChatMessage,
+  PublishedIdentitySnapshot,
 } from './index.js';
 
 // Projection-engine integration (browser-safe; caller supplies an in-memory store).

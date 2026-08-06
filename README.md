@@ -33,7 +33,26 @@ pinned GitHub dependency:
 
 - `nb.chat.message.v1` — canonical JSON chat message record.
 - `nb.identity.record.v1` — display-name record signed by a profile key.
-- `nb.identity.snapshot.v1` — identity record snapshot.
+- `nb.identity.snapshot.v1` — identity record plus a `ref` back to its
+  canonical event, so it can be carried into another channel.
+
+### Identity visibility
+
+Payloads are encrypted with the **channel** keypair, so a record is readable by
+whoever holds that channel's secret — not by the author alone, and not by the
+world:
+
+- written to a **profile's own channel** (`publishIdentityRecord` path), it is
+  readable only by that profile's own devices;
+- carried into a **hub** as a snapshot (`publishIdentitySnapshot`), it is
+  readable by every member of that hub.
+
+Because every hub member holds the hub secret, the envelope proves only that
+*some* member wrote the event: `payload.authorPublicKey` is an unauthenticated
+claim. Always verify the record's own profile-key signature
+(`verifyIdentityRecord` / `verifyIdentitySnapshot`, or use
+`projectIdentityDirectory`, which verifies for you) before attributing a name.
+See `nearbytes-specs/requirements/identity-distribution-v1.md` (IDENT-xx).
 
 ## Chat Scope
 
