@@ -135,3 +135,38 @@ test('no identity published yields null rather than throwing', async () => {
   const { deps } = await fixture();
   assert.equal(await readOwnIdentityRecord(deps, 'nobody:secret'), null);
 });
+
+// ── chat attribution ──────────────────────────────────────────────────────
+
+test('a message signed by the author is attributable', async () => {
+  const { crypto, log, deps, alice, alicePk } = await fixture();
+  const { publishChatMessage, isAttributed, verifyChatMessage } = await import('../dist/index.js');
+
+  const published = await publishChatMessage(deps, HUB, 'hello', 1000, alice);
+  assert.equal(published.message.k, alicePk, 'k must name the author, not the hub');
+  assert.notEqual(published.message.k, published.channelPublicKey);
+  assert.ok(await verifyChatMessage(crypto, published.message), 'signature verifies under the author key');
+  assert.ok(isAttributed({ ...published, publishedAt: 1000, verified: true }));
+});
+
+test('without an author key the message is unattributed, not hub-authored', async () => {
+  const { deps } = await fixture();
+  const { publishChatMessage, isAttributed } = await import('../dist/index.js');
+
+  // The legacy shape: k equals the channel key, so it names the hub. Consumers
+  // must be able to detect this rather than render the hub key as a person.
+  const published = await publishChatMessage(deps, HUB, 'legacy', 1000);
+  assert.equal(published.message.k, published.channelPublicKey);
+  assert.equal(isAttributed({ ...published, publishedAt: 1000, verified: true }), false);
+});
+
+test('two members are distinguishable in one hub', async () => {
+  const { crypto, deps, alice, alicePk } = await fixture();
+  const { publishChatMessage } = await import('../dist/index.js');
+  const bob = await crypto.deriveKeys(createSecret('bob:secret'));
+
+  const a = await publishChatMessage(deps, HUB, 'from alice', 1000, alice);
+  const b = await publishChatMessage(deps, HUB, 'from bob', 1001, bob);
+  assert.notEqual(a.message.k, b.message.k, 'attribution is the whole point');
+  assert.equal(a.message.k, alicePk);
+});

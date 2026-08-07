@@ -3,7 +3,7 @@
  * reloads. One projection per hub channel, persisted via a MaterializedStore, fed
  * incrementally by the log router. `nearbytes-engine` wires this; shells consume it.
  */
-import type { CryptoOperations } from 'nearbytes-crypto';
+import type { KeyPair, CryptoOperations } from 'nearbytes-crypto';
 import { createSecret, bytesToHex } from 'nearbytes-crypto';
 import type { EventLogEntry, Log, MaterializedStore, Projection } from 'nearbytes-log';
 import { createProjection, openChannel } from 'nearbytes-log';
@@ -21,7 +21,17 @@ export interface ChatService {
   /** Live, persisted chat timeline (no full channel reload when warm). */
   timeline(secret: string): Promise<ChatTimelineItem[]>;
   /** Append a chat message; the projection updates incrementally. */
-  publish(secret: string, body: string, timestamp?: number): Promise<PublishedChatMessage>;
+  /**
+   * `authorKeyPair` is the sender's *profile* keypair and is what makes the
+   * message attributable; without it `k` falls back to the hub key, which
+   * identifies the channel rather than a person.
+   */
+  publish(
+    secret: string,
+    body: string,
+    timestamp?: number,
+    authorKeyPair?: KeyPair,
+  ): Promise<PublishedChatMessage>;
   /** Boot path: ingest a batch of already-known events for one channel. */
   ingest(secret: string, entries: readonly EventLogEntry[]): Promise<void>;
   /** Subscribe to timeline changes for one channel. */
@@ -68,12 +78,12 @@ export function createChatService(deps: ChatServiceDependencies): ChatService {
       await projection.catchUp();
       return [...projection.state().items];
     },
-    async publish(secret, body, timestamp) {
+    async publish(secret, body, timestamp, authorKeyPair) {
       // Ensure the projection (and its live router subscription) exists first, so
       // the stored event is ingested via the router with no full-channel rescan.
       // publish is then O(1): no per-publish listEvents/catchUp.
       await ensure(secret);
-      return publishChatMessage({ log: deps.log, crypto: deps.crypto }, secret, body, timestamp);
+      return publishChatMessage({ log: deps.log, crypto: deps.crypto }, secret, body, timestamp, authorKeyPair);
     },
     async ingest(secret, entries) {
       const projection = await ensure(secret);

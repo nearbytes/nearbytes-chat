@@ -201,26 +201,60 @@ export async function publishChatMessage(
   hubSecret: Secret | string,
   body: string,
   timestamp: number = Date.now(),
+  /**
+   * Keypair that *authors* the message, i.e. the sender's profile keypair.
+   *
+   * Two different keys are in play and conflating them costs attribution
+   * entirely. The **channel** keypair (derived from the hub secret) signs and
+   * encrypts the enclosing event: every member holds it, so it says only
+   * "some member of this hub wrote this". The **author** keypair signs the
+   * inner `ChatMessage` and fills its `k`, which is the only field that can
+   * say *who*.
+   *
+   * Omitting this falls back to the channel keypair, which is what the
+   * implementation used to do unconditionally: `k` was then the hub key for
+   * every message from every member, so consumers comparing `k` against their
+   * own profile key never matched and every message rendered under one
+   * identical author label. Such messages remain readable and verifiable —
+   * they are simply unattributed, and consumers detect that by `k` equalling
+   * `channelPublicKey`.
+   */
+  authorKeyPair?: KeyPair,
 ): Promise<PublishedChatMessage> {
   const secret = normalizeSecret(hubSecret);
   const channel = await openChannel(secret, deps.crypto);
-  const keyPair = await deps.crypto.deriveKeys(channel.secret);
-  const message = await createChatMessage(deps.crypto, keyPair, { body, timestamp });
+  const channelKeyPair = await deps.crypto.deriveKeys(channel.secret);
+  const author = authorKeyPair ?? channelKeyPair;
+  const message = await createChatMessage(deps.crypto, author, { body, timestamp });
   const payload: AppRecordPayload = {
     type: EventType.APP_RECORD,
     protocol: CHAT_MESSAGE_PROTOCOL,
-    authorPublicKey: bytesToHex(keyPair.publicKey),
+    authorPublicKey: bytesToHex(author.publicKey),
     record: serializeChatMessage(message),
     publishedAt: timestamp,
   };
-  const signedEvent = await createSignedEvent(deps.crypto, keyPair, payload, []);
-  const eventHash = await deps.log.events.storeEvent(keyPair.publicKey, signedEvent);
+  // The envelope stays signed by the channel keypair: it is what authorises
+  // writing into this hub at all, and what every member can verify.
+  const signedEvent = await createSignedEvent(deps.crypto, channelKeyPair, payload, []);
+  const eventHash = await deps.log.events.storeEvent(channelKeyPair.publicKey, signedEvent);
   return {
-    channelPublicKey: bytesToHex(keyPair.publicKey),
+    channelPublicKey: bytesToHex(channelKeyPair.publicKey),
     eventHash,
     message,
     payload,
   };
+}
+
+/**
+ * Whether a timeline item carries real authorship.
+ *
+ * Messages written before per-author attribution — and any written without an
+ * author keypair — have `k` equal to the channel key, which identifies the hub
+ * rather than a person. Consumers MUST treat those as unattributed instead of
+ * rendering the hub key as though it were an author.
+ */
+export function isAttributed(item: ChatTimelineItem): boolean {
+  return item.message.k !== item.channelPublicKey;
 }
 
 export async function readChatTimeline(
