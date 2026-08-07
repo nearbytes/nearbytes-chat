@@ -23,7 +23,8 @@
     "type-check": "tsc --noEmit",
     "prepack": "tsc",
     "refresh": "node scripts/refresh.mjs",
-    "update": "node scripts/update.mjs"
+    "update": "node scripts/update.mjs",
+    "test": "tsc && node --test test/*.test.mjs"
   },
   "license": "MIT",
   "engines": {
